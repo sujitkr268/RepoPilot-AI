@@ -1,4 +1,16 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
+// Normalize API base URL: handles relative paths, Render hostnames, and full URLs with or without /api/v1
+const getApiBase = () => {
+  let raw = process.env.NEXT_PUBLIC_API_URL?.trim() || "/api/v1";
+  if (raw && !raw.startsWith("http") && !raw.startsWith("/")) {
+    raw = `https://${raw}`;
+  }
+  if (raw.startsWith("http") && !raw.endsWith("/api/v1")) {
+    raw = `${raw.replace(/\/+$/, "")}/api/v1`;
+  }
+  return raw;
+};
+
+const API_BASE = getApiBase();
 
 class ApiClient {
   private getToken(): string | null {

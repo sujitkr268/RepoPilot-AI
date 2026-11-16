@@ -13,12 +13,19 @@ class Base(DeclarativeBase):
 
 
 # SQLite connection strings require specific connect_args for multithreading / sqlite concurrency
+db_url = settings.DATABASE_URL
 connect_args = {}
-if settings.DATABASE_URL.startswith("sqlite"):
+
+if db_url.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
+elif db_url.startswith("postgres://"):
+    # Render and Heroku default to postgres://, SQLAlchemy async requires postgresql+asyncpg://
+    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+elif db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    db_url,
     echo=False,
     connect_args=connect_args,
     future=True,
