@@ -84,6 +84,12 @@ class ApiClient {
     return this.request<any[]>(url);
   }
 
+  async getFileContent(id: string, path: string) {
+    return this.request<{ path: string; content: string; size_bytes: number }>(
+      `/repositories/${id}/file-content?path=${encodeURIComponent(path)}`
+    );
+  }
+
   async chatRepository(id: string, message: string) {
     return this.request<any>(`/repositories/${id}/chat`, {
       method: "POST",

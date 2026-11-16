@@ -138,7 +138,7 @@ async def analyze_repository(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Analysis failed: {str(e)}")
 
-    # Update or create analysis record
+    # Update or create analysis record safely
     stmt_an = select(RepositoryAnalysis).where(RepositoryAnalysis.repository_id == repo.id)
     an_res = await db.execute(stmt_an)
     analysis = an_res.scalar_one_or_none()
@@ -160,30 +160,58 @@ async def analyze_repository(
     analysis.key_directories = results["key_directories"]
 
     # Ingest file tree for file explorer & search
-    tree = await gh_client.get_repository_tree(repo.owner, repo.name, branch=repo.default_branch)
-    # Clear previous files for clean sync
-    del_stmt = select(RepositoryFile).where(RepositoryFile.repository_id == repo.id)
-    del_res = await db.execute(del_stmt)
-    for f in del_res.scalars().all():
-        await db.delete(f)
+    try:
+        tree = await gh_client.get_repository_tree(repo.owner, repo.name, branch=repo.default_branch)
+        # Clear previous files for clean sync
+        del_stmt = select(RepositoryFile).where(RepositoryFile.repository_id == repo.id)
+        del_res = await db.execute(del_stmt)
+        for f in del_res.scalars().all():
+            await db.delete(f)
 
-    for item in tree[:300]:  # limit to top 300 tree entries
-        p = item.get("path", "")
-        _, ext = os.path.splitext(p)
-        is_imp = p in results.get("entry_points", []) or os.path.basename(p) in results.get("manifest_files", [])
-        rf = RepositoryFile(
-            repository_id=repo.id,
-            path=p,
-            type=item.get("type", "blob"),
-            size_bytes=item.get("size", 0) or 0,
-            sha=item.get("sha"),
-            extension=ext,
-            is_important=is_imp,
-        )
-        db.add(rf)
+        for item in tree[:300]:  # limit to top 300 tree entries
+            p = item.get("path", "")
+            _, ext = os.path.splitext(p)
+            is_imp = p in results.get("entry_points", []) or os.path.basename(p) in results.get("manifest_files", [])
+            rf = RepositoryFile(
+                repository_id=repo.id,
+                path=p,
+                type=item.get("type", "blob"),
+                size_bytes=item.get("size", 0) or 0,
+                sha=item.get("sha"),
+                extension=ext,
+                is_important=is_imp,
+            )
+            db.add(rf)
+    except Exception:
+        # tree fetch failure is non-fatal
+        pass
 
-    await db.commit()
-    await db.refresh(analysis)
+    try:
+        await db.commit()
+        await db.refresh(analysis)
+    except Exception:
+        await db.rollback()
+        # Handle concurrent creation race condition
+        stmt_retry = select(RepositoryAnalysis).where(RepositoryAnalysis.repository_id == repo.id)
+        retry_res = await db.execute(stmt_retry)
+        analysis = retry_res.scalar_one_or_none()
+        if analysis:
+            analysis.status = "completed"
+            analysis.languages = results["languages"]
+            analysis.frameworks = results["frameworks"]
+            analysis.architecture_summary = results["architecture_summary"]
+            analysis.setup_instructions = results["setup_instructions"]
+            analysis.testing_instructions = results["testing_instructions"]
+            analysis.entry_points = results["entry_points"]
+            analysis.test_frameworks = results["test_frameworks"]
+            analysis.potential_concerns = results["potential_concerns"]
+            analysis.dependencies = results["dependencies"]
+            analysis.key_directories = results["key_directories"]
+            await db.commit()
+            await db.refresh(analysis)
+        else:
+            raise
+
     return analysis
 
 
@@ -227,6 +255,40 @@ async def list_repository_files(
     stmt = stmt.limit(limit)
     res = await db.execute(stmt)
     return res.scalars().all()
+
+
+@router.get("/{id}/file-content")
+async def get_repository_file_content(
+    id: str,
+    path: str = Query(..., description="Relative file path in repository"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetches real file content from GitHub or cached repository blob."""
+    stmt = select(Repository).where(Repository.id == id, Repository.user_id == current_user.id)
+    res = await db.execute(stmt)
+    repo = res.scalar_one_or_none()
+    if not repo:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found.")
+
+    # Check cached in DB
+    f_stmt = select(RepositoryFile).where(RepositoryFile.repository_id == id, RepositoryFile.path == path)
+    f_res = await db.execute(f_stmt)
+    rf = f_res.scalar_one_or_none()
+    if rf and rf.content:
+        return {"path": path, "content": rf.content, "size_bytes": rf.size_bytes}
+
+    # Fetch from GitHub
+    gh_client = GitHubClient()
+    content = await gh_client.get_file_content(repo.owner, repo.name, path, ref=repo.default_branch)
+    if content is None:
+        content = f"// File '{path}' is empty or could not be loaded."
+
+    if rf:
+        rf.content = content
+        await db.commit()
+
+    return {"path": path, "content": content, "size_bytes": len(content.encode("utf-8"))}
 
 
 @router.post("/{id}/chat", response_model=RepoChatResponse)

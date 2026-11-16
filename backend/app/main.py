@@ -65,5 +65,8 @@ async def root():
 
 
 @app.get("/healthz")
+@app.get("/health")
+@app.get(f"{settings.API_V1_STR}/healthz")
+@app.get(f"{settings.API_V1_STR}/health")
 async def health_check():
     return {"status": "healthy", "version": settings.VERSION}
