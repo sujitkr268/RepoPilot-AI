@@ -33,11 +33,11 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS configuration with automatic support for Render URLs and local dev
+# CORS configuration allowing all Vercel, Render, custom domains, and local development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_origin_regex=r"https://.*\.onrender\.com",
+    allow_origin_regex=r"https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
